@@ -82,12 +82,29 @@ class NIDaqmxDevice(DeviceBase):
                 pass
 
 
+class USB6008Device(DeviceBase):
+    name = "usb6008"
+
+    def __init__(self):
+        from usb6008 import USB6008
+
+        self._dev = USB6008()
+
+    def read_all(self):
+        return self._dev.read_all()
+
+    def close(self):
+        self._dev.close()
+
+
 def create_device(backend=None):
     backend = (backend or os.environ.get("DATALOGGER_BACKEND", "auto")).lower()
     if backend == "mock":
         return MockDevice()
     if backend == "nidaqmx":
         return NIDaqmxDevice()
+    if backend == "usb6008":
+        return USB6008Device()
     try:
         return NIDaqmxDevice()
     except Exception:

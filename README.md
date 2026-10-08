@@ -135,7 +135,66 @@ This runs `git pull` against the home work tree and restarts the service.
 
 `GET /datalogger/api/health` returns the backend and connection state.
 
+## Reading the USB-6008 directly (libusb)
+
+NI-DAQmx has no ARM build, so on the Pi the service talks to the USB-6008 itself
+through libusb (`datalogger/usb6008.py`, using `pyusb`). The USB transport is in
+place; the device's command protocol is not publicly documented and is being
+derived from USB captures.
+
+Confirmed device details (from the USB descriptors):
+
+- VID/PID `0x3923:0x717a`, a single interface (alt 0) with four **bulk**
+  endpoints: `0x81`/`0x01` (EP1 IN/OUT) and `0x82`/`0x02` (EP2 IN/OUT),
+  64-byte max packets.
+
+Enable it on the device:
+
+```sh
+sudo apt install python3-usb libusb-1.0-0
+sudo cp ~/deploy/99-ni-usb6008.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules && sudo udevadm trigger
+python3 ~/datalogger/usb6008.py
+```
+
+`usb6008.py` run directly prints the descriptors and attempts a 1-byte read on
+every IN endpoint, which confirms libusb access (no kernel driver is needed; the
+6008 runs flash-resident firmware and enumerates as `3923:717a` on its own).
+
+To make the service use it:
+
+```sh
+sudo systemctl edit datalogger.service   # add: Environment=DATALOGGER_BACKEND=usb6008
+sudo systemctl restart datalogger.service
+```
+
+### Deriving the command protocol
+
+The opcodes are not published, so we capture what NI-DAQmx sends while
+performing one operation at a time and replay it. The transport exposes
+low-level `control_in()`, `control_out()`, `read_bulk()` and `write_bulk()`
+helpers for encoding the result.
+
+Windows host with NI-DAQmx and the device attached:
+
+1. Install Wireshark + USBPcap.
+2. Capture the USB bus while doing a single `read AI0`, then separately a single
+   `read DI0` (e.g. from a small LabVIEW/Python program).
+3. Filter on VID `0x3923` and export the capture.
+
+Linux x86 host with NI-DAQmx Base:
+
+```sh
+sudo modprobe usbmon
+sudo tcpdump -i usbmon1 -w usb6008.pcap
+```
+
+With the probe output and the capture, the exact byte sequences get encoded into
+`read_analog()` / `read_digital()`.
+
 ## Roadmap
 
-- [ ] Userspace `libusb` driver for the USB-6008 (analog + digital inputs).
+- [x] Pluggable device layer and `/datalogger` page.
+- [x] USB transport scaffolding + on-device probe (`usb6008.py`).
+- [ ] Decode the AI/DI commands from a USB capture and implement the reads.
 - [ ] Optional logging/history and sampling-rate configuration.
