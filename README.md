@@ -5,23 +5,28 @@ Datalogger service for a Raspberry Pi Zero reading a National Instruments
 (single-ended AI0..AI7) and **8 digital inputs** (P0.0..P0.7) through a small web
 page at `/datalogger`.
 
-The existing status site under `www/` (Flask API on port 5000 + nginx) is left
-untouched. The datalogger runs as its own Flask service on port 5001.
+The existing device status site in the home directory (`www/`, Flask API on
+port 5000 + nginx) is not part of this repository and is left untouched. The
+datalogger runs as its own Flask service on port 5001.
 
 ## Repository layout
 
 ```
 datalogger/
-  app.py              Flask API (/api/inputs, /api/health)
-  device.py           Pluggable device layer (mock / nidaqmx)
+  app.py                 Flask API (/api/inputs, /api/health)
+  device.py              Pluggable device layer (mock / nidaqmx)
   requirements.txt
-  static/index.html   The /datalogger page
+  static/index.html      The /datalogger page
 deploy/
-  datalogger.service  systemd unit
+  datalogger.service     systemd unit
   nginx-datalogger.conf  nginx location snippet
-  deploy.sh           Copies files to the Pi and restarts the service
-www/                  Existing device status service (unchanged)
+  install.sh             One-time install of the systemd service
+  update.sh              Pull the latest code and restart the service
 ```
+
+On the device the repository is checked out **directly into the home directory**,
+so `~/datalogger` and `~/deploy` are the live files (no extra clone folder). See
+[Deploy on the Raspberry Pi](#deploy-on-the-raspberry-pi).
 
 ## Hardware note (important)
 
@@ -70,14 +75,33 @@ binary.
 Dependencies are already present on the device (Python, Flask, flask-cors). The
 page is served by nginx.
 
+Instead of cloning into a `datalogger-rpi` folder, the repository is checked out
+with the **home directory as the git work tree**, so `~/datalogger` and
+`~/deploy` appear directly in the home directory. Git metadata lives in the
+hidden `~/.datalogger-rpi.git`, and a sparse checkout keeps everything else
+(README, etc.) out of the home directory.
+
+Run these once on the device:
+
 ```sh
-git clone <this-repo> ~/DataLogger_Rpi
-cd ~/DataLogger_Rpi
-sh deploy/deploy.sh
+git clone --bare https://github.com/argusro/datalogger-rpi.git "$HOME/.datalogger-rpi.git"
+
+git --git-dir="$HOME/.datalogger-rpi.git" --work-tree="$HOME" config core.bare false
+git --git-dir="$HOME/.datalogger-rpi.git" --work-tree="$HOME" config status.showUntrackedFiles no
+git --git-dir="$HOME/.datalogger-rpi.git" --work-tree="$HOME" config branch.main.remote origin
+git --git-dir="$HOME/.datalogger-rpi.git" --work-tree="$HOME" config branch.main.merge refs/heads/main
+git --git-dir="$HOME/.datalogger-rpi.git" --work-tree="$HOME" sparse-checkout set --no-cone datalogger deploy
+git --git-dir="$HOME/.datalogger-rpi.git" --work-tree="$HOME" checkout
 ```
 
-Then add `deploy/nginx-datalogger.conf` inside the existing nginx `server {}`
-block (e.g. in `/etc/nginx/sites-available/default`) and reload nginx:
+Then install the service and wire up nginx:
+
+```sh
+sh ~/deploy/install.sh
+```
+
+Add `~/deploy/nginx-datalogger.conf` inside the existing nginx `server {}` block
+(e.g. in `/etc/nginx/sites-available/default`) and reload nginx:
 
 ```sh
 sudo nginx -t && sudo systemctl reload nginx
@@ -88,10 +112,10 @@ Open `http://<pi-host>/datalogger/`.
 ### Updating
 
 ```sh
-cd ~/DataLogger_Rpi
-git pull
-sh deploy/deploy.sh
+sh ~/deploy/update.sh
 ```
+
+This runs `git pull` against the home work tree and restarts the service.
 
 ## API
 
