@@ -1,0 +1,14 @@
+[Unit]
+Description=NI USB-6008 Datalogger API
+After=network.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/datalogger
+ExecStart=/usr/bin/python3 /home/pi/datalogger/app.py
+Environment=DATALOGGER_BACKEND=auto
+Environment=DATALOGGER_PORT=5001
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

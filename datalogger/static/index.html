@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>NI USB-6008 Datalogger</title>
+    <style>
+        :root {
+            --ok: #2e9e4f;
+            --off: #c9c9c9;
+            --bar: #337ab7;
+        }
+        body {
+            font-family: Arial, sans-serif;
+            background: #f4f4f4;
+            margin: 0;
+            padding: 0;
+            color: #222;
+        }
+        .container {
+            max-width: 760px;
+            margin: 24px auto;
+            background: #fff;
+            padding: 16px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        h2 {
+            text-align: center;
+            font-size: 1.5em;
+            margin: 0 0 4px;
+        }
+        .status {
+            text-align: center;
+            font-size: 0.85em;
+            color: #666;
+            margin-bottom: 16px;
+        }
+        .status .dot {
+            display: inline-block;
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            background: var(--off);
+            margin-right: 6px;
+            vertical-align: middle;
+        }
+        .status.connected .dot { background: var(--ok); }
+        .status.error .dot { background: #d9534f; }
+        h3 {
+            font-size: 1em;
+            margin: 16px 0 8px;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 4px;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+        }
+        .card {
+            border: 1px solid #eee;
+            border-radius: 6px;
+            padding: 8px 10px;
+        }
+        .card .row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+        }
+        .card .name {
+            font-weight: bold;
+            font-size: 0.85em;
+            color: #555;
+        }
+        .card .value {
+            font-variant-numeric: tabular-nums;
+            font-size: 1.05em;
+        }
+        .bar {
+            position: relative;
+            height: 6px;
+            background: #eee;
+            border-radius: 3px;
+            margin-top: 6px;
+            overflow: hidden;
+        }
+        .bar .fill {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            left: 50%;
+            width: 0;
+            background: var(--bar);
+            transition: width .15s, left .15s;
+        }
+        .bar .center {
+            position: absolute;
+            left: 50%;
+            top: -1px;
+            bottom: -1px;
+            width: 1px;
+            background: #bbb;
+        }
+        .dgrid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 8px;
+        }
+        .dio {
+            text-align: center;
+            border: 1px solid #eee;
+            border-radius: 6px;
+            padding: 10px 4px;
+        }
+        .dio .name {
+            font-size: 0.8em;
+            color: #555;
+            font-weight: bold;
+        }
+        .dio .led {
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background: var(--off);
+            margin: 6px auto;
+            transition: background .15s;
+        }
+        .dio.high .led { background: var(--ok); }
+        .dio .state {
+            font-size: 0.75em;
+            color: #777;
+        }
+        .error {
+            display: none;
+            margin-top: 16px;
+            padding: 10px;
+            border-radius: 4px;
+            background: #fdecea;
+            color: #b71c1c;
+            font-size: 0.85em;
+            word-break: break-word;
+        }
+        @media (max-width: 500px) {
+            .container { max-width: 98vw; padding: 8px; }
+            h2 { font-size: 1.2em; }
+            .grid { grid-template-columns: 1fr; }
+            .dgrid { grid-template-columns: repeat(2, 1fr); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>NI USB-6008 Datalogger</h2>
+        <div id="status" class="status">
+            <span class="dot"></span><span id="statusText">Connecting…</span>
+        </div>
+
+        <h3>Analog Inputs (V)</h3>
+        <div id="analog" class="grid"></div>
+
+        <h3>Digital Inputs</h3>
+        <div id="digital" class="dgrid"></div>
+
+        <div id="error" class="error"></div>
+    </div>
+
+    <script>
+    const API_BASE = window.location.pathname.replace(/\/[^/]*$/, '/');
+    const REFRESH_MS = 1000;
+    const AI_COUNT = 8;
+    const DI_COUNT = 8;
+    let voltageMax = 10;
+
+    function buildAnalog() {
+        const host = document.getElementById('analog');
+        host.innerHTML = '';
+        for (let i = 0; i < AI_COUNT; i++) {
+            const card = document.createElement('div');
+            card.className = 'card';
+            card.innerHTML = `
+                <div class="row"><span class="name">AI${i}</span><span class="value" id="ai${i}">–</span></div>
+                <div class="bar"><div class="center"></div><div class="fill" id="aifill${i}"></div></div>`;
+            host.appendChild(card);
+        }
+    }
+
+    function buildDigital() {
+        const host = document.getElementById('digital');
+        host.innerHTML = '';
+        for (let i = 0; i < DI_COUNT; i++) {
+            const card = document.createElement('div');
+            card.className = 'dio';
+            card.id = `di${i}`;
+            card.innerHTML = `
+                <div class="name">DI${i}</div>
+                <div class="led"></div>
+                <div class="state" id="distate${i}">–</div>`;
+            host.appendChild(card);
+        }
+    }
+
+    function render(data) {
+        const status = document.getElementById('status');
+        const statusText = document.getElementById('statusText');
+        const errorBox = document.getElementById('error');
+
+        if (data.voltage_max) voltageMax = data.voltage_max;
+
+        (data.analog || []).forEach((v, i) => {
+            const valueEl = document.getElementById(`ai${i}`);
+            const fillEl = document.getElementById(`aifill${i}`);
+            if (!valueEl || !fillEl) return;
+            valueEl.textContent = `${v.toFixed(4)} V`;
+            const pct = Math.max(-1, Math.min(1, v / voltageMax)) * 50;
+            fillEl.style.width = `${Math.abs(pct)}%`;
+            fillEl.style.left = pct >= 0 ? '50%' : `${50 + pct}%`;
+            fillEl.style.background = pct >= 0 ? '#337ab7' : '#d9534f';
+        });
+
+        (data.digital || []).forEach((v, i) => {
+            const card = document.getElementById(`di${i}`);
+            const stateEl = document.getElementById(`distate${i}`);
+            if (!card || !stateEl) return;
+            card.classList.toggle('high', !!v);
+            stateEl.textContent = v ? 'HIGH' : 'LOW';
+        });
+
+        if (data.connected) {
+            status.className = 'status connected';
+            statusText.textContent =
+                `${data.backend} · ${data.device} · ${data.timestamp}`;
+            errorBox.style.display = 'none';
+        } else {
+            status.className = 'status error';
+            statusText.textContent = 'Disconnected';
+            errorBox.style.display = 'block';
+            errorBox.textContent = data.error || 'No connection to the datalogger service.';
+        }
+    }
+
+    function poll() {
+        fetch(API_BASE + 'api/inputs', { cache: 'no-store' })
+            .then(async (r) => {
+                const data = await r.json().catch(() => ({}));
+                if (!r.ok && !data.error) data.error = `HTTP ${r.status}`;
+                render(data);
+            })
+            .catch((e) => render({ connected: false, error: String(e) }));
+    }
+
+    buildAnalog();
+    buildDigital();
+    poll();
+    setInterval(poll, REFRESH_MS);
+    </script>
+</body>
+</html>
