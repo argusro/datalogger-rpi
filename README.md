@@ -175,21 +175,47 @@ performing one operation at a time and replay it. The transport exposes
 low-level `control_in()`, `control_out()`, `read_bulk()` and `write_bulk()`
 helpers for encoding the result.
 
-Windows host with NI-DAQmx and the device attached:
+### Capturing on Windows (NI-DAQmx installed)
 
-1. Install Wireshark + USBPcap.
-2. Capture the USB bus while doing a single `read AI0`, then separately a single
-   `read DI0` (e.g. from a small LabVIEW/Python program).
-3. Filter on VID `0x3923` and export the capture.
+1. Install Wireshark with the **USBPcap** component (ticked during setup).
+2. Connect the USB-6008 and open Wireshark; note which `USBPcapN` interface the
+   device is behind (Device Manager → the hub the 6008 is plugged into).
+3. Start a capture on that interface, filter display to `usb.idVendor == 0x3923`.
+4. Trigger one operation, then stop the capture and save the `.pcapng`:
+   - Single analog read of AI0, then separately:
+   - Single digital read of port 0 / line 0.
 
-Linux x86 host with NI-DAQmx Base:
+   Easiest is a short script on the Windows box (`pip install nidaqmx`):
+
+   ```python
+   import nidaqmx
+   with nidaqmx.Task() as t:
+       t.ai_channels.add_ai_voltage_chan("Dev1/ai0")
+       print(t.read())
+   ```
+
+   ```python
+   import nidaqmx
+   with nidaqmx.Task() as t:
+       t.di_channels.add_di_chan("Dev1/port0/line0")
+       print(t.read())
+   ```
+
+5. Save the captures here (git-ignored):
+
+   ```
+   captures\ai0.pcapng
+   captures\di0.pcapng
+   ```
+
+### Capturing on Linux x86 (NI-DAQmx Base)
 
 ```sh
 sudo modprobe usbmon
-sudo tcpdump -i usbmon1 -w usb6008.pcap
+sudo tcpdump -i usbmon1 -w captures/usb6008.pcap
 ```
 
-With the probe output and the capture, the exact byte sequences get encoded into
+With the captures, the exact byte sequences get encoded into
 `read_analog()` / `read_digital()`.
 
 ## Roadmap
