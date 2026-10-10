@@ -76,7 +76,7 @@ def _safe_string(dev, index):
 
 def build_message(opcode, params=b""):
     total = 8 + len(params)
-    return struct.pack("<HHHH", 0x0001, total, total - 4, opcode) + params
+    return struct.pack(">HHHH", 0x0001, total, total - 4, opcode) + params
 
 
 INIT_SEQUENCE = [
@@ -266,7 +266,7 @@ class USB6008(object):
         data = self.read_bulk(EP_DATA_IN, 2)
         if len(data) < 2:
             raise USB6008Error("short AI sample: %r" % data)
-        return struct.unpack("<H", data)[0]
+        return struct.unpack(">H", data)[0]
 
     def raw_to_volts(self, raw):
         counts = (raw & 0xFFFF) >> 4
@@ -284,7 +284,8 @@ class USB6008(object):
         ack = self._command(opcode, bytes.fromhex(params))
         if len(ack) < 2:
             raise USB6008Error("short DI response: %r" % ack)
-        return struct.unpack("<H", ack[-2:])[0]
+        word = struct.unpack(">H", ack[-2:])[0]
+        return (word >> 8) & 0xFF
 
     def debug_ai(self, channel=0):
         print("== init ==")
