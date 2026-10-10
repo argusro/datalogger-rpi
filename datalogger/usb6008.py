@@ -153,6 +153,11 @@ class USB6008(object):
             self._claimed = True
         except usb.core.USBError as exc:
             raise USB6008Error("claim_interface failed: %s" % exc)
+        for ep in iface:
+            try:
+                usb.util.clear_halt(ep)
+            except Exception:
+                pass
 
     def _get_interface(self, number=None):
         number = self._interface if number is None else number
@@ -220,7 +225,14 @@ class USB6008(object):
 
     def write_bulk(self, address, data, timeout=READ_TIMEOUT_MS):
         ep = self._endpoint(address, direction=0)
-        return ep.write(data, timeout=timeout)
+        try:
+            return ep.write(data, timeout=timeout)
+        except usb.core.USBError:
+            try:
+                usb.util.clear_halt(ep)
+            except Exception:
+                pass
+            return ep.write(data, timeout=timeout)
 
     def _send(self, opcode, params=b""):
         self.write_bulk(EP_CMD_OUT, build_message(opcode, params))
