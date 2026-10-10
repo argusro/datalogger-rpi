@@ -226,7 +226,7 @@ class USB6008(object):
     def _send(self, opcode, params=b""):
         self.write_bulk(EP_CMD_OUT, build_message(opcode, params))
 
-    def _read_ack(self, timeout=READ_TIMEOUT_MS):
+    def _read_ack(self, timeout=300):
         try:
             return self.read_bulk(EP_CMD_IN, 64, timeout=timeout)
         except usb.core.USBError:
@@ -279,6 +279,25 @@ class USB6008(object):
             raise USB6008Error("short DI response: %r" % ack)
         return struct.unpack("<H", ack[-2:])[0]
 
+    def debug_ai(self, channel=0):
+        print("== init ==")
+        for opcode, params in INIT_SEQUENCE:
+            self._send(opcode, bytes.fromhex(params))
+            print("  %04x %s -> %s" % (opcode, params, self._read_ack().hex() or "<none>"))
+        print("== ai config channel %d ==" % channel)
+        for opcode, params in ai_config_commands(channel):
+            self._send(opcode, bytes.fromhex(params))
+            print("  %04x %s -> %s" % (opcode, params, self._read_ack().hex() or "<none>"))
+        print("== read (0014) ==")
+        opcode, params = AI_READ
+        self._send(opcode, bytes.fromhex(params))
+        for _ in range(3):
+            try:
+                print("  ep2:", self.read_bulk(EP_DATA_IN, 2, timeout=2000).hex())
+            except Exception as exc:
+                print("  ep2 error:", exc)
+                break
+
     def read_digital(self, line=0):
         return bool((self.read_digital_port() >> line) & 1)
 
@@ -317,6 +336,13 @@ def main():
     except USB6008Error as exc:
         print("error: %s" % exc)
         return 2
+
+    if "--debug" in sys.argv:
+        i = sys.argv.index("--debug")
+        ch = int(sys.argv[i + 1]) if len(sys.argv) > i + 1 and sys.argv[i + 1].isdigit() else 0
+        driver.debug_ai(ch)
+        driver.close()
+        return 0
 
     if "--read" in sys.argv:
         try:
