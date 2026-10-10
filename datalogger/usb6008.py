@@ -140,9 +140,8 @@ class USB6008(object):
         dev = self._dev
         try:
             dev.set_configuration()
-        except usb.core.USBError as exc:
-            if getattr(exc, "errno", None) not in (16, 22):
-                raise USB6008Error("set_configuration failed: %s" % exc)
+        except usb.core.USBError:
+            pass
         iface = self._get_interface()
         try:
             if dev.is_kernel_driver_active(iface.bInterfaceNumber):
