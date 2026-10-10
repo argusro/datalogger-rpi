@@ -138,10 +138,6 @@ class USB6008(object):
 
     def _open(self):
         dev = self._dev
-        try:
-            dev.set_configuration()
-        except usb.core.USBError:
-            pass
         iface = self._get_interface()
         try:
             if dev.is_kernel_driver_active(iface.bInterfaceNumber):
