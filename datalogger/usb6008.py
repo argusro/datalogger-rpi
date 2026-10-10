@@ -84,23 +84,30 @@ INIT_SEQUENCE = [
     (0x0114, "02040000000001f100010000"),
 ]
 
-AI_CONFIG_SEQUENCE = [
-    (0x010F, "0202000000040000"),
-    (0x010E, "0202000000030000"),
-    (0x0110, "0202000000002710ffffd8f0fdfd000400000000"),
-    (0x010E, "0200000000000000"),
-    (0x010F, "0200000000000001"),
-    (0x0113, "02000000"),
-    (0x0115, "02000000"),
-    (0x0118, "02000000"),
-    (0x010F, "02030000"),
-    (0x0109, "02030000"),
-    (0x0109, "02000000"),
-]
-
 AI_READ = (0x0014, "0203000000000001")
 
 DI_READ = (0x010E, "0210000000030000")
+
+AI_CHANNELS = 8
+DI_CHANNELS = 8
+
+
+def ai_config_commands(channel):
+    bank = "02" if channel >= 4 else "00"
+    ch = "%02x" % (channel & 0xFF)
+    return [
+        (0x010F, "02020000000400" + ch),
+        (0x010E, "020200000003" + bank + "00"),
+        (0x0110, "0202000000002710ffffd8f0fdfd000400000000"),
+        (0x010E, "0200000000000000"),
+        (0x010F, "0200000000000001"),
+        (0x0113, "02000000"),
+        (0x0115, "02000000"),
+        (0x0118, "02000000"),
+        (0x010F, "02030000"),
+        (0x0109, "02030000"),
+        (0x0109, "02000000"),
+    ]
 
 AI_STOP_SEQUENCE = [
     (0x010B, "02000000"),
@@ -125,6 +132,7 @@ class USB6008(object):
         self._voltage_max = voltage_max
         self._claimed = False
         self._ai_started = False
+        self._ai_channel = None
         self._open()
         self._init()
 
@@ -232,10 +240,11 @@ class USB6008(object):
         for opcode, params in INIT_SEQUENCE:
             self._command(opcode, bytes.fromhex(params))
 
-    def start_ai(self):
-        for opcode, params in AI_CONFIG_SEQUENCE:
+    def start_ai(self, channel=0):
+        for opcode, params in ai_config_commands(channel):
             self._command(opcode, bytes.fromhex(params))
         self._ai_started = True
+        self._ai_channel = channel
 
     def stop_ai(self):
         for opcode, params in AI_STOP_SEQUENCE:
@@ -257,7 +266,11 @@ class USB6008(object):
         return round((counts - AI_ADC_MID) * self._voltage_max / AI_ADC_COUNTS, 4)
 
     def read_analog(self, channel=0):
-        return self.raw_to_volts(self.read_ai_raw())
+        self.start_ai(channel)
+        try:
+            return self.raw_to_volts(self.read_ai_raw())
+        finally:
+            self.stop_ai()
 
     def read_digital_port(self):
         opcode, params = DI_READ
@@ -270,9 +283,9 @@ class USB6008(object):
         return bool((self.read_digital_port() >> line) & 1)
 
     def read_all(self):
-        analog = [self.read_analog(0)]
+        analog = [self.read_analog(c) for c in range(AI_CHANNELS)]
         port = self.read_digital_port()
-        digital = [bool((port >> i) & 1) for i in range(8)]
+        digital = [bool((port >> i) & 1) for i in range(DI_CHANNELS)]
         return {"analog": analog, "digital": digital}
 
     def close(self):
@@ -307,14 +320,11 @@ def main():
 
     if "--read" in sys.argv:
         try:
-            print("Reading AI0 + DI port (Ctrl+C to stop)...")
-            driver.start_ai()
+            print("Reading AI0-7 + DI0-7 (Ctrl+C to stop)...")
             while True:
-                raw = driver.read_ai_raw()
-                port = driver.read_digital_port()
-                print("AI0 raw=0x%04x counts=%4d  %8.4f V   DI port=0x%02x %s"
-                      % (raw, (raw & 0xFFFF) >> 4, driver.raw_to_volts(raw),
-                         port, format(port, "08b")))
+                data = driver.read_all()
+                print("AI " + " ".join("%8.4f" % v for v in data["analog"]) +
+                      "   DI " + "".join("1" if b else "0" for b in data["digital"]))
                 time.sleep(1.0)
         except KeyboardInterrupt:
             print("stopping")
