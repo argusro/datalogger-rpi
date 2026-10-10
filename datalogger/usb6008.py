@@ -100,6 +100,8 @@ AI_CONFIG_SEQUENCE = [
 
 AI_READ = (0x0014, "0203000000000001")
 
+DI_READ = (0x010E, "0210000000030000")
+
 AI_STOP_SEQUENCE = [
     (0x010B, "02000000"),
     (0x010C, "02000000"),
@@ -257,14 +259,21 @@ class USB6008(object):
     def read_analog(self, channel=0):
         return self.raw_to_volts(self.read_ai_raw())
 
+    def read_digital_port(self):
+        opcode, params = DI_READ
+        ack = self._command(opcode, bytes.fromhex(params))
+        if len(ack) < 2:
+            raise USB6008Error("short DI response: %r" % ack)
+        return struct.unpack("<H", ack[-2:])[0]
+
     def read_digital(self, line=0):
-        raise USB6008Error("digital read protocol not implemented yet")
+        return bool((self.read_digital_port() >> line) & 1)
 
     def read_all(self):
-        return {
-            "analog": [self.read_analog(0)],
-            "digital": [],
-        }
+        analog = [self.read_analog(0)]
+        port = self.read_digital_port()
+        digital = [bool((port >> i) & 1) for i in range(8)]
+        return {"analog": analog, "digital": digital}
 
     def close(self):
         try:
@@ -298,12 +307,14 @@ def main():
 
     if "--read" in sys.argv:
         try:
-            print("Reading AI0 (Ctrl+C to stop)...")
+            print("Reading AI0 + DI port (Ctrl+C to stop)...")
             driver.start_ai()
             while True:
                 raw = driver.read_ai_raw()
-                print("raw=0x%04x counts=%d  %.4f V"
-                      % (raw, (raw & 0xFFFF) >> 4, driver.raw_to_volts(raw)))
+                port = driver.read_digital_port()
+                print("AI0 raw=0x%04x counts=%4d  %8.4f V   DI port=0x%02x %s"
+                      % (raw, (raw & 0xFFFF) >> 4, driver.raw_to_volts(raw),
+                         port, format(port, "08b")))
                 time.sleep(1.0)
         except KeyboardInterrupt:
             print("stopping")
