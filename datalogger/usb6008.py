@@ -1,17 +1,27 @@
 """Userspace USB driver for the National Instruments USB-6008.
 
-This module talks to the device directly over libusb (via pyusb); it does NOT
-use NI-DAQmx, which has no ARM build. The USB command protocol is being
-reverse-engineered, so the low-level transport (enumeration, interface claim,
-control/bulk transfers) is implemented here while the exact command opcodes are
-filled in as they are confirmed from USB captures.
+Talks to the device directly over libusb (via pyusb); no NI-DAQmx required,
+which is what makes it usable on ARM/Raspberry Pi.
 
-Run this file directly on the device to dump descriptors and endpoints:
+Protocol (reverse-engineered from a USB capture of NI-DAQmx):
 
-    python3 usb6008.py
+  Command channel: EP 0x01 (out) / 0x81 (in)   frame:
+      00 01 | u16 total_len | u16 (total_len - 4) | u16 opcode | params...
+  Data channel:    EP 0x82 (in) / 0x02 (out)
+
+  Analog single sample: run the AI config sequence, then send opcode 0x0014
+  with params 02 03 00 00 00 00 00 01 and read 2 bytes from EP 0x82. The value
+  is a 12-bit sample left-justified in 16 bits, offset binary (2048 == 0 V).
+
+Run on the device:
+
+    python3 usb6008.py            # dump descriptors
+    python3 usb6008.py --read     # configure AI and print a few samples
 """
 
+import struct
 import sys
+import time
 
 try:
     import usb.core
@@ -24,6 +34,14 @@ VENDOR_ID = 0x3923
 PRODUCT_IDS = (0x717A, 0x0000)
 
 READ_TIMEOUT_MS = 1000
+
+EP_CMD_OUT = 0x01
+EP_CMD_IN = 0x81
+EP_DATA_IN = 0x82
+EP_DATA_OUT = 0x02
+
+AI_ADC_MID = 2048
+AI_ADC_COUNTS = 2048
 
 
 class USB6008Error(Exception):
@@ -56,10 +74,44 @@ def _safe_string(dev, index):
         return None
 
 
+def build_message(opcode, params=b""):
+    total = 8 + len(params)
+    return struct.pack("<HHHH", 0x0001, total, total - 4, opcode) + params
+
+
+INIT_SEQUENCE = [
+    (0x0114, "02040000000001f000010000"),
+    (0x0114, "02040000000001f100010000"),
+]
+
+AI_CONFIG_SEQUENCE = [
+    (0x010F, "0202000000040000"),
+    (0x010E, "0202000000030000"),
+    (0x0110, "0202000000002710ffffd8f0fdfd000400000000"),
+    (0x010E, "0200000000000000"),
+    (0x010F, "0200000000000001"),
+    (0x0113, "02000000"),
+    (0x0115, "02000000"),
+    (0x0118, "02000000"),
+    (0x010F, "02030000"),
+    (0x0109, "02030000"),
+    (0x0109, "02000000"),
+]
+
+AI_READ = (0x0014, "0203000000000001")
+
+AI_STOP_SEQUENCE = [
+    (0x010B, "02000000"),
+    (0x010C, "02000000"),
+    (0x010C, "02030000"),
+    (0x010D, "02000000"),
+]
+
+
 class USB6008(object):
     name = "usb6008"
 
-    def __init__(self, device=None, interface=0):
+    def __init__(self, device=None, interface=0, voltage_max=10.0):
         _require_pyusb()
         self._dev = device or find_device()
         if self._dev is None:
@@ -68,15 +120,17 @@ class USB6008(object):
                 % (VENDOR_ID, ", ".join("0x%04x" % p for p in PRODUCT_IDS))
             )
         self._interface = interface
+        self._voltage_max = voltage_max
         self._claimed = False
+        self._ai_started = False
         self._open()
+        self._init()
 
     def _open(self):
         dev = self._dev
         try:
             dev.set_configuration()
         except usb.core.USBError as exc:
-            # Already configured is fine.
             if getattr(exc, "errno", None) not in (16, 22):
                 raise USB6008Error("set_configuration failed: %s" % exc)
         iface = self._get_interface()
@@ -119,9 +173,6 @@ class USB6008(object):
             entry = {
                 "number": iface.bInterfaceNumber,
                 "alternate": iface.bAlternateSetting,
-                "class": iface.bInterfaceClass,
-                "subclass": iface.bInterfaceSubClass,
-                "protocol": iface.bInterfaceProtocol,
                 "endpoints": [],
             }
             for ep in iface:
@@ -130,7 +181,6 @@ class USB6008(object):
                     "direction": "IN" if ep.bEndpointAddress & 0x80 else "OUT",
                     "type": ep.bmAttributes & 0x03,
                     "max_packet_size": ep.wMaxPacketSize,
-                    "interval": getattr(ep, "bInterval", None),
                 })
             info["interfaces"].append(entry)
         return info
@@ -163,23 +213,65 @@ class USB6008(object):
         ep = self._endpoint(address, direction=0)
         return ep.write(data, timeout=timeout)
 
+    def _send(self, opcode, params=b""):
+        self.write_bulk(EP_CMD_OUT, build_message(opcode, params))
+
+    def _read_ack(self, timeout=READ_TIMEOUT_MS):
+        try:
+            return self.read_bulk(EP_CMD_IN, 64, timeout=timeout)
+        except usb.core.USBError:
+            return b""
+
+    def _command(self, opcode, params=b""):
+        self._send(opcode, params)
+        return self._read_ack()
+
+    def _init(self):
+        for opcode, params in INIT_SEQUENCE:
+            self._command(opcode, bytes.fromhex(params))
+
+    def start_ai(self):
+        for opcode, params in AI_CONFIG_SEQUENCE:
+            self._command(opcode, bytes.fromhex(params))
+        self._ai_started = True
+
+    def stop_ai(self):
+        for opcode, params in AI_STOP_SEQUENCE:
+            self._command(opcode, bytes.fromhex(params))
+        self._ai_started = False
+
+    def read_ai_raw(self):
+        if not self._ai_started:
+            self.start_ai()
+        opcode, params = AI_READ
+        self._send(opcode, bytes.fromhex(params))
+        data = self.read_bulk(EP_DATA_IN, 2)
+        if len(data) < 2:
+            raise USB6008Error("short AI sample: %r" % data)
+        return struct.unpack("<H", data)[0]
+
+    def raw_to_volts(self, raw):
+        counts = (raw & 0xFFFF) >> 4
+        return round((counts - AI_ADC_MID) * self._voltage_max / AI_ADC_COUNTS, 4)
+
     def read_analog(self, channel=0):
-        raise USB6008Error(
-            "analog read protocol not implemented yet; run the USB capture step"
-        )
+        return self.raw_to_volts(self.read_ai_raw())
 
     def read_digital(self, line=0):
-        raise USB6008Error(
-            "digital read protocol not implemented yet; run the USB capture step"
-        )
+        raise USB6008Error("digital read protocol not implemented yet")
 
     def read_all(self):
         return {
             "analog": [self.read_analog(0)],
-            "digital": [self.read_digital(0)],
+            "digital": [],
         }
 
     def close(self):
+        try:
+            if self._ai_started:
+                self.stop_ai()
+        except Exception:
+            pass
         if self._claimed:
             try:
                 usb.util.release_interface(self._dev, self._interface)
@@ -193,31 +285,36 @@ class USB6008(object):
 
 
 def main():
+    _require_pyusb()
     try:
         dev = find_device()
         if dev is None:
             print("NI USB-6008 not found.")
             return 1
         driver = USB6008(dev)
-        import json
-        print(json.dumps(driver.describe(), indent=2))
-        print()
-        print("Trying a 1-byte read on every IN endpoint (timeout %d ms):"
-              % READ_TIMEOUT_MS)
-        for iface in driver.describe()["interfaces"]:
-            for ep in iface["endpoints"]:
-                if ep["direction"] != "IN":
-                    continue
-                try:
-                    data = driver.read_bulk(int(ep["address"], 16), 64)
-                    print("  %s -> %s" % (ep["address"], data.hex()))
-                except Exception as exc:
-                    print("  %s -> no data (%s)" % (ep["address"], exc))
-        driver.close()
-        return 0
     except USB6008Error as exc:
         print("error: %s" % exc)
         return 2
+
+    if "--read" in sys.argv:
+        try:
+            print("Reading AI0 (Ctrl+C to stop)...")
+            driver.start_ai()
+            while True:
+                raw = driver.read_ai_raw()
+                print("raw=0x%04x counts=%d  %.4f V"
+                      % (raw, (raw & 0xFFFF) >> 4, driver.raw_to_volts(raw)))
+                time.sleep(1.0)
+        except KeyboardInterrupt:
+            print("stopping")
+        finally:
+            driver.close()
+        return 0
+
+    import json
+    print(json.dumps(driver.describe(), indent=2))
+    driver.close()
+    return 0
 
 
 if __name__ == "__main__":
